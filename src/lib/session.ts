@@ -467,34 +467,56 @@ export async function getOrCreateSessionUser(): Promise<User> {
     }
   }
 
-  const suffix = Math.floor(1000 + Math.random() * 9000);
-  const handle = `player_${suffix}`;
-  const cashtag = `$player${suffix}`;
-  const newToken = generateSessionToken();
-  const recoveryCode = generateRecoveryCode();
   const startingBalance = 15000;
+  let created: User | undefined;
+  let handle = "";
+  let cashtag = "";
+  let newToken = "";
 
-  const [created] = await db
-    .insert(users)
-    .values({
-      handle,
-      email: "",
-      passwordHash: "",
-      cashtag,
-      sessionToken: newToken,
-      recoveryCode,
-      balanceCents: startingBalance,
-      totalDepositedCents: startingBalance,
-      totalWithdrawnCents: 0,
-      totalWageredCents: 0,
-      totalWonCents: 0,
-      wins: 0,
-      losses: 0,
-      isBot: false,
-      isSuspended: false,
-      ageVerified: true,
-    })
-    .returning();
+  // Retry with a fresh handle/token if we hit a unique collision
+  // (old 4-digit handles collided often on Vercel serverless instances)
+  for (let attempt = 0; attempt < 6 && !created; attempt++) {
+    const suffix = `${Date.now().toString(36)}${randomCode(4).toLowerCase()}`;
+    handle = `player_${suffix}`.slice(0, 22);
+    cashtag = `$player${suffix}`.slice(0, 22);
+    newToken = generateSessionToken();
+    const recoveryCode = generateRecoveryCode();
+    try {
+      const rows = await db
+        .insert(users)
+        .values({
+          handle,
+          email: "",
+          passwordHash: "",
+          cashtag,
+          sessionToken: newToken,
+          recoveryCode,
+          balanceCents: startingBalance,
+          totalDepositedCents: startingBalance,
+          totalWithdrawnCents: 0,
+          totalWageredCents: 0,
+          totalWonCents: 0,
+          wins: 0,
+          losses: 0,
+          isBot: false,
+          isSuspended: false,
+          ageVerified: true,
+        })
+        .returning();
+      created = rows[0];
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isDuplicate =
+        msg.includes("unique") ||
+        msg.includes("duplicate") ||
+        msg.includes("23505");
+      if (!isDuplicate || attempt === 5) throw err;
+    }
+  }
+
+  if (!created) {
+    throw new Error("Could not create player account, please refresh.");
+  }
 
   await db.insert(walletTransactions).values({
     userId: created.id,
